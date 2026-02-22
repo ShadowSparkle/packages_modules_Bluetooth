@@ -3013,6 +3013,13 @@ void bta_av_open_at_inc(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data) {
   }
 }
 
+// Default A2DP MTK offload coex opcode
+constexpr uint8_t kA2dpCoexOpcodeDefault = 0xA0;
+static uint8_t bta_av_get_coex_opcode(void) {
+  return osi_property_get_int32("persist.bluetooth.a2dp_offload.coex_opcode",
+            kA2dpCoexOpcodeDefault);
+}
+
 static void offload_vendor_callback(tBTM_VSC_CMPL* param) {
   tBTA_AV value{0};
   uint8_t sub_opcode = 0;
@@ -3049,8 +3056,9 @@ static void offload_vendor_callback(tBTM_VSC_CMPL* param) {
     }
   } else {
     log::verbose("Offload failed for subopcode= {}", sub_opcode);
-    if (param->opcode == VS_HCI_A2DP_OFFLOAD_ENABLE_COEX)
+    if (param->opcode == bta_av_get_coex_opcode()) {
       return;
+    }
     if (param->opcode != VS_HCI_A2DP_OFFLOAD_STOP && param->opcode != VS_HCI_A2DP_OFFLOAD_STOP_V2) {
       bta_av_cb.offload_start_pending_hndl = BTA_AV_INVALID_HANDLE;
       (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, &value);
@@ -3064,19 +3072,9 @@ static void offload_vendor_callback(tBTM_VSC_CMPL* param) {
   }
 }
 
-/*
- * How many ACL buffers should be reserved for A2DP offload
- * Recommend ~30–40% of total controller ACL buffers (e.g. 8 total -> 2–3).
- */
-#define COEX_BUFFER_COUNT_MIN 0
-#define COEX_BUFFER_COUNT_MAX 10
-#define COEX_BUFFER_COUNT_DEFAULT 5
-static uint16_t bta_av_get_coex_buffer_count() {
-  int val = osi_property_get_int32(
-      "persist.bluetooth.a2dp_offload.coex_buf_count",
-      COEX_BUFFER_COUNT_DEFAULT);
-  val = std::clamp(val, COEX_BUFFER_COUNT_MIN, COEX_BUFFER_COUNT_MAX);
-  return static_cast<uint16_t>(val);
+// Number of ACL buffers reserved for A2DP offload coex
+static uint8_t bta_av_get_coex_buffer_count(void) {
+  return osi_property_get_int32("persist.bluetooth.a2dp_offload.coex_buf_count", 0);
 }
 
 static void bta_av_vendor_offload_start(tBTA_AV_SCB* p_scb, tBT_A2DP_OFFLOAD* offload_start) {
@@ -3106,14 +3104,14 @@ static void bta_av_vendor_offload_start(tBTA_AV_SCB* p_scb, tBT_A2DP_OFFLOAD* of
           offload_start->codec_type, offload_start->sample_rate, offload_start->bits_per_sample,
           offload_start->ch_mode, offload_start->encoded_audio_bitrate, offload_start->acl_hdl,
           offload_start->l2c_rcid, offload_start->mtu);
-  uint16_t coex_buf_count = bta_av_get_coex_buffer_count();
+  uint8_t coex_buf_count = bta_av_get_coex_buffer_count();
   l2c_link_set_br_coex_buf_cap(coex_buf_count, base::BindOnce([](uint8_t* param, uint8_t* p_param,
-                                                                 uint16_t coex_buf_count, bool success) {
+                                                                 uint8_t coex_buf_count, bool success) {
     if (!success) {
       log::error("failed setting coex buffer cap");
     }
-    if (osi_property_get_bool("persist.bluetooth.a2dp_offload.mtk_coex", false)) {
-      uint8_t mtk_param[] = {VS_HCI_A2DP_OFFLOAD_ENABLE_COEX, static_cast<uint8_t>(coex_buf_count)};
+    if (coex_buf_count > 0) {
+      uint8_t mtk_param[] = {bta_av_get_coex_opcode(), coex_buf_count};
       get_btm_client_interface().vendor.BTM_VendorSpecificCommand(HCI_CONTROLLER_A2DP, sizeof(mtk_param),
                                                                   mtk_param, offload_vendor_callback);
     }
